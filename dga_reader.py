@@ -71,7 +71,9 @@ def load_data(data_dir, max_word_length):
         with codecs.open(os.path.join(data_dir, fname + '.txt'), 'r', 'utf-8') as f:
             for line in f:
                 line = line.strip()
-                line += '*'
+                if len(line) > max_word_length:
+                    continue
+                # line += '*'
                 # line = line.split(".")[0]
                 char_array = [char_vocab.feed(c) for c in line]
                 char_tokens[fname].append(char_array)

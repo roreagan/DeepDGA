@@ -22,7 +22,7 @@ def conv2d(input_, output_dim, k_h, k_w, name="conv2d"):
     return tf.nn.conv2d(input_, w, strides=[1, 1, 1, 1], padding='SAME') + b
 
 
-def linear(input_, output_size, scope=None, activation=tf.nn.relu):
+def linear(input_, output_size, scope=None, activation=tf.nn.leaky_relu):
     '''
     Linear map: output[k] = sum_i(Matrix[k, i] * args[i] ) + Bias[k]
 
@@ -88,21 +88,10 @@ def tdnn(input_, kernels, kernel_features, scope='TDNN'):
     with tf.variable_scope(scope):
         kernel_index = 0
         for kernel_size, kernel_feature_size in zip(kernels, kernel_features):
-
             conv = tf.layers.conv1d(input_, kernel_feature_size, kernel_size, 1, padding='same')
-
-
-            # reduced_length = max_word_length - kernel_size + 1
-            # conv = conv2d(input_, kernel_feature_size, 1, kernel_size, name="kernel_%d" % kernel_index)
-
-            # [batch_size*num_unroll_steps, 1, 1, kernel_feature_size]
-            # pool = tf.nn.max_pool(tf.tanh(conv), [1, 1, reduced_length, 1], [1, 1, 1, 1], 'VALID')
             conv = tf.transpose(conv, [0, 2, 1])
             pool = tf.layers.max_pooling1d(conv, [conv.get_shape()[1]], 1, padding='valid')
-            # pool2 = tf.nn.max_pool(tf.tanh(conv), [1, 1, kernel_feature_size, 1], [1, 1, 1, 1], 'VALID')
             pool2 = tf.transpose(pool, [0, 2, 1])
-
-            # layers.append(tf.squeeze(pool, [1, 2]))
             layers.append(pool2)
 
             kernel_index += 1
@@ -159,7 +148,7 @@ def inference_graph(char_vocab_size,
             input_cnn = tf.reshape(input_cnn, [batch_size * max_word_length, -1])
             input_cnn = highway(input_cnn, input_cnn.get_shape()[-1], num_layers=num_highway_layers)
             input_cnn = tf.reshape(input_cnn, [batch_size, max_word_length, -1])
-            #　input_cnn = tf.layers.batch_normalization(input_cnn)
+            input_cnn = tf.layers.batch_normalization(input_cnn)
 
         ''' Finally, do LSTM '''
         with tf.variable_scope('LSTM'):
@@ -187,7 +176,7 @@ def inference_graph(char_vocab_size,
             # outputs = tf.concat([tf.expand_dims(output, 1) for output in outputs], 1)
             outputs = tf.reshape(outputs, [batch_size * max_word_length, -1])
             embed_output = linear(outputs, embed_dimension, scope='out_linear')
-            embed_output = tf.reshape(embed_output, [batch_size, max_word_length, -1])
+            embed_output = tf.reshape(embed_output, [batch_size, max_word_length, embed_dimension])
 
     return adict(
         input=input_,
@@ -203,7 +192,6 @@ def inference_graph(char_vocab_size,
 
 
 def decoder_graph(_input,
-                  input_len,
                   char_vocab_size,
                   batch_size=20,
                   num_highway_layers=2,
@@ -217,6 +205,9 @@ def decoder_graph(_input,
 
     # rnn_input = [tf.squeeze(x, [1]) for x in tf.split(_input, max_word_length, 1)]
     # input_len = tf.placeholder(tf.int32, shape=[batch_size], name="input")
+    _input = tf.layers.batch_normalization(_input)
+
+    rnn_input = [tf.squeeze(x, [1]) for x in tf.split(_input, max_word_length, 1)]
 
     with tf.variable_scope('Decoder'):
         def create_rnn_cell():
@@ -232,10 +223,14 @@ def decoder_graph(_input,
 
         initial_rnn_state = cell.zero_state(batch_size, dtype=tf.float32)
 
-        _input = tf.layers.batch_normalization(_input)
-        outputs, final_rnn_state = tf.nn.dynamic_rnn(cell, _input, sequence_length=input_len,
-                                                     initial_state=initial_rnn_state, dtype=tf.float32)
+
+        # outputs, final_rnn_state = tf.nn.dynamic_rnn(cell, _input, sequence_length=input_len,
+        #                                              initial_state=initial_rnn_state, dtype=tf.float32)
+        outputs, final_rnn_state = tf.nn.static_rnn(cell, rnn_input, initial_state=initial_rnn_state, dtype=tf.float32)
+
+
         # outputs = [tf.expand_dims(time_unit, 1) for time_unit in outputs]
+        outputs = tf.concat([tf.expand_dims(output, 1) for output in outputs], 1)
 
         outputs = tf.layers.batch_normalization(outputs)
         '''
@@ -263,7 +258,7 @@ def decoder_graph(_input,
 
     return adict(
         decoder_input=_input,
-        input_len_d=input_len,
+        # input_len_d=input_len,
         decoder_output=embed_out,
         initial_rnn_state_d=initial_rnn_state,
         final_rnn_state_d=final_rnn_state,
@@ -323,9 +318,9 @@ def autoencoder_train_graph(loss, learning_rate=1.0, max_grad_norm=0.1):
 
 def lr(batch_size=20, max_word_length=65, embed_dimension=32):
     with tf.variable_scope('LR'):
-        input_ = tf.placeholder(tf.float16, shape=[batch_size, max_word_length, embed_dimension], name="input")
-        input_ = tf.reshape(input_, [batch_size, -1])
-        output = tf.nn.relu(linear(input_, 2, scope='lr_linear'))
+        input_ = tf.placeholder(tf.float32, shape=[batch_size, max_word_length, embed_dimension], name="input")
+        input_re = tf.reshape(input_, [batch_size, -1])
+        output = linear(input_re, 2, scope='lr_linear')
     return adict(
         lr_input=input_,
         lr_output=output
@@ -367,8 +362,8 @@ def lr_train_graph(loss, learning_rate=0.01, max_grad_norm=5.0):
 
 def genearator_layer(batch_size=20, input_dimension=32, max_word_length=65, embed_dimension=32):
     with tf.variable_scope('GL'):
-        input_ = tf.placeholder(tf.float16, shape=[batch_size, input_dimension], name="input")
-        output = tf.nn.relu(linear(input_, max_word_length * embed_dimension, scope='lr_linear'))
+        input_ = tf.placeholder(tf.float32, shape=[batch_size, input_dimension], name="input")
+        output = linear(input_, max_word_length * embed_dimension, scope='lr_linear')
         output = tf.reshape(output, [batch_size, max_word_length, embed_dimension])
     return adict(
         gl_input=input_,
@@ -378,7 +373,7 @@ def genearator_layer(batch_size=20, input_dimension=32, max_word_length=65, embe
 
 def generator_layer_loss(_input, batch_size=20, max_word_length=65, embed_dimension=32):
     with tf.variable_scope('gl_loss'):
-        target = tf.placeholder(tf.int32, shape=[batch_size, max_word_length, embed_dimension], name="target")
+        target = tf.placeholder(tf.float32, shape=[batch_size, max_word_length, embed_dimension], name="target")
         loss = tf.reduce_sum(tf.losses.mean_squared_error(_input, target))
     return adict(
         gl_target=target,

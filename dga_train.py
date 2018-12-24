@@ -27,7 +27,7 @@ flags.DEFINE_string ('kernels',         str([2] * 20 + [3] * 10),            'CN
 flags.DEFINE_string ('kernel_features', str([32] * 30),                      'number of features in the CNN kernel')
 flags.DEFINE_integer('rnn_layers',      2,                              'number of layers in the LSTM')
 flags.DEFINE_float  ('dropout',         0.5,                            'dropout. 0 = no dropout')
-flags.DEFINE_float  ('random_dimension',         32,                    'dimension of random numbers input in generator')
+flags.DEFINE_integer('random_dimension',         32,                    'dimension of random numbers input in generator')
 
 # optimization
 flags.DEFINE_float  ('learning_rate_decay', 0.5,  'learning rate decay')
@@ -35,13 +35,15 @@ flags.DEFINE_float  ('learning_rate',       0.001,  'starting learning rate')
 flags.DEFINE_float  ('decay_when',          1.0,  'decay if validation perplexity does not improve by more than this much')
 flags.DEFINE_float  ('param_init',          0.5, 'initialize parameters at')
 flags.DEFINE_integer('batch_size',          64,   'number of sequences to train on in parallel')
-flags.DEFINE_integer('max_epochs',          250,   'number of full passes through the training data')
+flags.DEFINE_integer('max_epochs',          5,   'number of full passes through the training data')
+flags.DEFINE_integer('max_epochs_lr',       10,   'number of epochs of training lr model')
+flags.DEFINE_integer('max_epochs_gl',       10,   'number of epochs of training generator model')
 flags.DEFINE_float  ('max_grad_norm',       5.0,  'normalize gradients at')
-flags.DEFINE_integer('max_word_length',     40,   'maximum word length')
+flags.DEFINE_integer('max_word_length',     70,   'maximum word length')
 
 # bookkeeping
 flags.DEFINE_integer('seed',           3435, 'random number generator seed')
-flags.DEFINE_integer('print_every',    5,    'how often to print current loss')
+flags.DEFINE_integer('print_every',    200,    'how often to print current loss')
 
 FLAGS = flags.FLAGS
 
@@ -67,6 +69,7 @@ def run_test(session, m, data, batch_size, num_steps, reader):
 
 
 def main(_):
+    tf.device('/gup:0')
     ''' Trains model from data '''
 
     if not os.path.exists(FLAGS.train_dir):
@@ -103,7 +106,6 @@ def main(_):
                     dropout=FLAGS.dropout,
                     embed_dimension=FLAGS.embed_dimension)
             train_model.update(dga_model.decoder_graph(train_model.embed_output,
-                                                       train_model.input_len_g,
                                                        char_vocab_size=char_vocab.size,
                                                        batch_size=FLAGS.batch_size,
                                                        num_highway_layers=FLAGS.highway_layers,
@@ -168,7 +170,8 @@ def main(_):
              tf.assign(train_model.gl_learning_rate, FLAGS.learning_rate)]
         )
 
-        ''' training starts here '''
+        ''' training autoencoder here '''
+        print("***************train autoencoder********************")
         rnn_state_g, rnn_state_d = session.run([train_model.initial_rnn_state_g, train_model.initial_rnn_state_d])
         print("Start to train auto-encoder.....\n")
         for epoch in range(FLAGS.max_epochs):
@@ -204,7 +207,7 @@ def main(_):
                 time_elapsed = time.time() - start_time
 
                 if count % FLAGS.print_every == 0:
-                    print('%6d: %d [%5d/%5d], loss1/2 = %6.8f/%6.8f, train_loss/perplexity = %6.8f/%6.7f secs/batch = %.4fs' % (step,
+                    print('AutoEncoder: %6d: %d [%5d/%5d], loss1/2 = %6.8f/%6.8f, train_loss/perplexity = %6.8f/%6.7f secs/batch = %.4fs' % (step,
                                                             epoch, count, train_reader.length, loss1, loss2, loss, np.exp(loss),
                                                             time_elapsed
                                                             ))
@@ -221,6 +224,144 @@ def main(_):
                 tf.Summary.Value(tag="train_loss", simple_value=avg_train_loss),
             ])
             summary_writer.add_summary(summary, step)
+
+        # saver.save(session, "autoencoder.model")
+
+        ''' training generator here '''
+        print("***************train generator********************")
+        for epoch in range(FLAGS.max_epochs_gl):
+            epoch_start_time = time.time()
+            avg_gl_loss = 0.0
+            count = 0
+            for x, y in train_reader.iter():
+                count += 1
+                start_time = time.time()
+
+                rnn_state_g, _, embed_output= session.run([
+                    train_model.final_rnn_state_g,
+                    train_model.clear_char_embedding_padding,
+                    train_model.embed_output,
+                ], {
+                    train_model.input: x,
+                    train_model.input_len_g: y,
+                    train_model.initial_rnn_state_g: rnn_state_g,
+                })
+
+                np_random = np.random.RandomState(FLAGS.seed)
+                generator_input = np_random.rand(FLAGS.batch_size, FLAGS.random_dimension)
+
+                gl_loss, _, step_gl = session.run([
+                    train_model.gl_loss,
+                    train_model.train_op_gl,
+                    train_model.global_step_gl,
+                ], {
+                    train_model.gl_input: generator_input,
+                    train_model.gl_target: embed_output
+                })
+
+                avg_gl_loss += 0.05 * (gl_loss - avg_gl_loss)
+
+                time_elapsed = time.time() - start_time
+
+                if count % FLAGS.print_every == 0:
+                    print('Generator Layer: %6d: %d [%5d/%5d], train_loss/perplexity = %6.8f/%6.7f secs/batch = %.4fs' % (step_gl, epoch, count, train_reader.length, gl_loss, np.exp(gl_loss), time_elapsed))
+
+            print('Epoch training time:', time.time()-epoch_start_time)
+
+            print("train loss = %6.8f, perplexity = %6.8f" % (avg_gl_loss, np.exp(avg_gl_loss)))
+
+            # saver.save(session, save_as)
+            # print('Saved model', save_as)
+
+            ''' write out summary events '''
+            gl_summary = tf.Summary(value=[
+                tf.Summary.Value(tag="gl_loss", simple_value=avg_gl_loss),
+            ])
+            summary_writer.add_summary(gl_summary, step_gl)
+
+        # saver.save(session, "gl.model")
+
+        ''' training lr here '''
+        print("***************train logistic regression********************")
+        for epoch in range(FLAGS.max_epochs_lr):
+            epoch_start_time = time.time()
+            avg_lr_loss = 0.0
+            count = 0
+            for x, y in train_reader.iter():
+                count += 1
+                start_time = time.time()
+
+                np_random = np.random.RandomState(FLAGS.seed)
+                generator_input = np_random.rand(FLAGS.batch_size, FLAGS.random_dimension)
+
+                gl_output = session.run([
+                    train_model.gl_output,
+                ], {
+                    train_model.gl_input: generator_input,
+                })
+
+                rnn_state_d, _, generated_dga = session.run([
+                    train_model.final_rnn_state_d,
+                    train_model.clear_char_embedding_padding,
+                    train_model.generated_dga,
+                ], {
+                    train_model.embed_output: gl_output[0],
+                    train_model.initial_rnn_state_d: rnn_state_d
+                })
+
+                # origin_dga = [char_vocab.change(dga).replace(" ", "") for dga in generated_dga]
+                target = np.zeros([FLAGS.batch_size])
+                generated_dga[0: int(len(generated_dga) / 2)] = x[0: int(len(generated_dga) / 2)]
+                target[0: int(len(generated_dga) / 2)] = np.ones([int(len(generated_dga) / 2)])
+
+                for i in range(int(len(generated_dga) / 2), len(generated_dga)):
+                    dga_len = 0
+                    dga = generated_dga[i]
+                    for dga_char in dga:
+                        if dga_char == ' ':
+                            break
+                        dga_len += 1
+                    y[i] = dga_len
+
+                rnn_state_g, _, embed_output= session.run([
+                    train_model.final_rnn_state_g,
+                    train_model.clear_char_embedding_padding,
+                    train_model.embed_output,
+                ], {
+                    train_model.input: generated_dga,
+                    train_model.input_len_g: y,
+                    train_model.initial_rnn_state_g: rnn_state_g,
+                })
+
+
+                lr_loss, _, step_lr = session.run([
+                    train_model.lr_loss,
+                    train_model.train_op_lr,
+                    train_model.global_step_lr,
+                ], {
+                    train_model.lr_input: embed_output,
+                    train_model.lr_target: target
+                })
+
+                avg_lr_loss += 0.05 * (lr_loss - avg_lr_loss)
+
+                time_elapsed = time.time() - start_time
+
+                if count % FLAGS.print_every == 0:
+                    print('Regression Logistic: %6d: %d [%5d/%5d], train_loss/perplexity = %6.8f/%6.7f secs/batch = %.4fs' % (step_lr, epoch, count, train_reader.length, lr_loss, np.exp(lr_loss), time_elapsed))
+
+            print('Epoch training time:', time.time()-epoch_start_time)
+
+            print("train loss = %6.8f, perplexity = %6.8f" % (avg_gl_loss, np.exp(avg_gl_loss)))
+
+            ''' write out summary events '''
+            lr_summary = tf.Summary(value=[
+                tf.Summary.Value(tag="lr_loss", simple_value=avg_gl_loss),
+            ])
+            summary_writer.add_summary(lr_summary, step_lr)
+
+        # saver.save(session, "final_model")
+        print('Saved model')
 
 
 if __name__ == "__main__":
