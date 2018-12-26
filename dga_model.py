@@ -296,7 +296,7 @@ def autoencoder_train_graph(loss, learning_rate=1.0, max_grad_norm=0.1):
     ''' Builds training graph. '''
     global_step = tf.Variable(0, name='global_step', trainable=False)
 
-    with tf.variable_scope('RMSProp'):
+    with tf.variable_scope('RMSProp_aed'):
         # SGD learning parameter
         learning_rate = tf.Variable(learning_rate, trainable=False, name='learning_rate')
 
@@ -316,9 +316,9 @@ def autoencoder_train_graph(loss, learning_rate=1.0, max_grad_norm=0.1):
         train_op=train_op)
 
 
-def lr(batch_size=20, max_word_length=65, embed_dimension=32):
+def lr(input_, batch_size=20, max_word_length=65, embed_dimension=32):
     with tf.variable_scope('LR'):
-        input_ = tf.placeholder(tf.float32, shape=[batch_size, max_word_length, embed_dimension], name="input")
+        # input_ = tf.placeholder(tf.float32, shape=[batch_size, max_word_length, embed_dimension], name="input")
         input_re = tf.reshape(input_, [batch_size, -1])
         output = linear(input_re, 2, scope='lr_linear')
     return adict(
@@ -340,24 +340,35 @@ def lr_loss(_input, batch_size=20):
 
 def lr_train_graph(loss, learning_rate=0.01, max_grad_norm=5.0):
     ''' Builds training graph. '''
-    global_step = tf.Variable(0, name='global_step', trainable=False)
+    global_step = tf.Variable(0, name='global_step_lr', trainable=False)
 
-    with tf.variable_scope('RMSProp'):
+    with tf.variable_scope('Adam_lr'):
         # SGD learning parameter
         learning_rate = tf.Variable(learning_rate, trainable=False, name='learning_rate')
+        learning_rate_g = tf.Variable(learning_rate, trainable=False, name='learning_rate_g')
 
         # collect all trainable variables
         tvars = [x for x in tf.trainable_variables() if "Model/LR" in x.name]
         grads, global_norm = tf.clip_by_global_norm(tf.gradients(loss, tvars), max_grad_norm)
 
-        optimizer = tf.train.RMSPropOptimizer(learning_rate)
-        train_op = optimizer.apply_gradients(zip(grads, tvars), global_step=global_step)
+        optimizer_a = tf.train.AdamOptimizer(learning_rate)
+        train_op = optimizer_a.apply_gradients(zip(grads, tvars), global_step=global_step)
+
+        gvars = [x for x in tf.trainable_variables() if "Model/GL" in x.name]
+        grads_g, global_norm_g = tf.clip_by_global_norm(tf.gradients(-loss, gvars), max_grad_norm)
+
+        optimizer_ga = tf.train.AdamOptimizer(learning_rate_g)
+        train_op_g = optimizer_ga.apply_gradients(zip(grads_g, gvars), global_step=global_step)
+
 
     return adict(
         lr_learning_rate=learning_rate,
+        lr_learning_rate_g=learning_rate_g,
         global_step_lr=global_step,
         global_norm_lr=global_norm,
-        train_op_lr=train_op)
+        train_op_lr=train_op,
+        train_op_g=train_op_g,
+    )
 
 
 def genearator_layer(batch_size=20, input_dimension=32, max_word_length=65, embed_dimension=32):
@@ -383,9 +394,9 @@ def generator_layer_loss(_input, batch_size=20, max_word_length=65, embed_dimens
 
 def generator_train_graph(loss, learning_rate=0.01, max_grad_norm=5.0):
     ''' Builds training graph. '''
-    global_step = tf.Variable(0, name='global_step', trainable=False)
+    global_step = tf.Variable(0, name='global_step_gl', trainable=False)
 
-    with tf.variable_scope('RMSProp'):
+    with tf.variable_scope('Adam_gl'):
         # SGD learning parameter
         learning_rate = tf.Variable(learning_rate, trainable=False, name='learning_rate')
 
