@@ -35,7 +35,7 @@ flags.DEFINE_float  ('learning_rate',       0.001,  'starting learning rate')
 flags.DEFINE_float  ('decay_when',          1.0,  'decay if validation perplexity does not improve by more than this much')
 flags.DEFINE_float  ('param_init',          0.5, 'initialize parameters at')
 flags.DEFINE_integer('batch_size',          64,   'number of sequences to train on in parallel')
-flags.DEFINE_integer('max_epochs',          9,   'number of full passes through the training data')
+flags.DEFINE_integer('max_epochs',          7,   'number of full passes through the training data')
 flags.DEFINE_integer('max_epochs_lr',       3,   'number of epochs of training lr model')
 flags.DEFINE_integer('max_epochs_gl',       5,   'number of epochs of training generator model')
 flags.DEFINE_float  ('max_grad_norm',       5.0,  'normalize gradients at')
@@ -156,13 +156,15 @@ def main(_):
 
         if FLAGS.load_model:
             saver.restore(session, FLAGS.load_model)
-            print('Loaded model from', FLAGS.load_model, 'saved at global step', train_model.global_step.eval())
+            print('Loaded model from', FLAGS.load_model, 'saved at global step', train_model.global_step_autoencoder.eval())
         else:
             tf.global_variables_initializer().run()
             session.run(train_model.clear_char_embedding_padding)
             print('Created and initialized fresh model. Size:', dga_model.model_size())
 
+
         summary_writer = tf.summary.FileWriter(FLAGS.train_dir, graph=session.graph)
+        tf.summary.merge_all()
 
         ''' take learning rate from CLI, not from saved graph '''
         session.run(
@@ -218,6 +220,8 @@ def main(_):
                         tf.Summary.Value(tag="train_loss", simple_value=avg_train_loss),
                     ])
                     summary_writer.add_summary(summary, step)
+
+            train_reader.shuf()
             print('Epoch training time:', time.time()-epoch_start_time)
 
             save_as = '%s/autoencoder_epoch%03d_%.4f.model' % (FLAGS.train_dir, epoch, avg_train_loss)
@@ -267,6 +271,8 @@ def main(_):
                         tf.Summary.Value(tag="gl_loss", simple_value=avg_gl_loss),
                     ])
                     summary_writer.add_summary(gl_summary, step_gl)
+
+            train_reader.shuf()
 
             print('Epoch training time:', time.time()-epoch_start_time)
 
@@ -357,6 +363,8 @@ def main(_):
                         tf.Summary.Value(tag="gr_loss", simple_value=avg_gr_loss),
                     ])
                     summary_writer.add_summary(gr_summary, step_lr)
+
+            train_reader.shuf()
 
             print('Epoch training time:', time.time()-epoch_start_time)
 

@@ -122,6 +122,9 @@ class DataReader:
         self.batch_size = batch_size
         self.length = len(self._x_batches)
 
+    def shuf(self):
+        shuffle(self.indexes)
+
     def iter(self):
         for i in self.indexes:
             yield self._x_batches[i], self._y_batches[i]
