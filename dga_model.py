@@ -193,7 +193,7 @@ def inference_graph(char_vocab_size,
 
 def decoder_graph(_input,
                   char_vocab_size,
-                  batch_size=20,
+                  batch_size=64,
                   num_highway_layers=2,
                   num_rnn_layers=2,
                   rnn_size=50,
@@ -371,7 +371,7 @@ def lr_train_graph(loss, learning_rate=0.01, max_grad_norm=5.0):
     )
 
 
-def genearator_layer(batch_size=20, input_dimension=32, max_word_length=65, embed_dimension=32):
+def genearator_layer(batch_size=64, input_dimension=32, max_word_length=65, embed_dimension=32):
     with tf.variable_scope('GL'):
         input_ = tf.placeholder(tf.float32, shape=[batch_size, input_dimension], name="input")
         output = linear(input_, max_word_length * embed_dimension, scope='lr_linear')
@@ -429,11 +429,11 @@ if __name__ == '__main__':
     with tf.Session() as sess:
         with tf.variable_scope('Model'):
             graph = inference_graph(char_vocab_size=51, dropout=0.5)
-            graph.update(decoder_graph(graph.embed_output, graph.input_len_g, char_vocab_size=51))
+            graph.update(decoder_graph(graph.embed_output, char_vocab_size=51))
             graph.update(en_decoder_loss_graph(graph.input, graph.input_len_g, graph.decoder_output))
 
-            graph.update(lr())
-            graph.update(lr_loss(graph.lr_output))
+            #graph.update(lr())
+            #graph.update(lr_loss(graph.lr_output))
             graph.update(genearator_layer())
             graph.update(generator_layer_loss(graph.gl_output))
 
